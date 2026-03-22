@@ -1,81 +1,77 @@
-from dotenv import load_dotenv
 import os
-import speech_recognition as sr
-from pydub import AudioSegment
-from utils.send_text import query_text as send_text
+import time
 import subprocess
+import requests
+from dotenv import load_dotenv
+from utils.send_text import query_text as send_text
+
+load_dotenv()
+
+ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
+BASE_URL = "https://api.assemblyai.com/v2"
+HEADERS = {"authorization": ASSEMBLYAI_API_KEY}
+
+
+def upload_audio(file_path: str) -> str:
+    with open(file_path, "rb") as f:
+        response = requests.post(f"{BASE_URL}/upload", headers=HEADERS, data=f)
+    response.raise_for_status()
+    return response.json()["upload_url"]
+
+
+def transcribe(audio_url: str) -> str:
+    response = requests.post(
+        f"{BASE_URL}/transcript",
+        headers=HEADERS,
+        json={"audio_url": audio_url}
+    )
+    response.raise_for_status()
+    transcript_id = response.json()["id"]
+
+    poll_url = f"{BASE_URL}/transcript/{transcript_id}"
+    while True:
+        result = requests.get(poll_url, headers=HEADERS).json()
+        if result["status"] == "completed":
+            return result["text"]
+        elif result["status"] == "error":
+            raise RuntimeError(f"Transcription error: {result.get('error')}")
+        time.sleep(3)
+
 
 def get_highlights(video_path: str):
-    src = "audio.mp3"
-    dst = "audio.wav"
-    r = sr.Recognizer()
+    audio_path = "audio.mp3"
 
-    # Step 1: Extract audio from video using FFmpeg
+    # Step 1: Extract audio from video
     command = [
-        'ffmpeg',
-        '-i', video_path,
-        '-q:a', '0',
-        '-map', 'a',
-        src,
-        '-y'  # Overwrite output file if it exists
+        "ffmpeg", "-i", video_path,
+        "-q:a", "0", "-map", "a",
+        audio_path, "-y"
     ]
     try:
         subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        print(f"Audio successfully extracted and saved to {src}")
+        print(f"Audio extracted to {audio_path}")
     except subprocess.CalledProcessError as e:
-        print(f"An error occurred: {e.stderr.decode()}")
+        print(f"FFmpeg error: {e.stderr.decode()}")
         return ""
     except FileNotFoundError:
         print("Error: ffmpeg not found. Make sure FFmpeg is installed and added to PATH.")
         return ""
 
-    # Step 2: Convert MP3 to WAV
+    # Step 2: Upload and transcribe
     try:
-        sound = AudioSegment.from_mp3(src)
-        sound.export(dst, format="wav")
-        print(f"Successfully converted {src} to {dst}")
+        print("Uploading audio to AssemblyAI...")
+        audio_url = upload_audio(audio_path)
+        print("Transcribing...")
+        result = transcribe(audio_url)
+        print(f"Transcription complete. Total characters: {len(result)}")
     except Exception as e:
-        print(f"Error during conversion: {e}")
-        return ""
-
-    # Step 3: Split audio into 30-second chunks
-    chunk_length_ms = 30 * 1000
-    chunks = [sound[i:i + chunk_length_ms] for i in range(0, len(sound), chunk_length_ms)]
-    print(f"Audio split into {len(chunks)} chunk(s) of 30 seconds each.")
-
-    # Step 4: Transcribe each chunk
-    full_text = []
-    for i, chunk in enumerate(chunks):
-        chunk_path = f"chunk_{i}.wav"
-        chunk.export(chunk_path, format="wav")
-
-        with sr.AudioFile(chunk_path) as source:
-            print(f"Reading chunk {i + 1}/{len(chunks)}...")
-            audio = r.record(source)
-
-        try:
-            print(f"Transcribing chunk {i + 1}/{len(chunks)}...")
-            text = r.recognize_google(audio)
-            full_text.append(text)
-            print(f"Chunk {i + 1} transcribed: {text[:60]}...")
-        except sr.UnknownValueError:
-            print(f"Chunk {i + 1}: Could not understand audio, skipping.")
-        except sr.RequestError as e:
-            print(f"Chunk {i + 1}: API request failed — {e}")
-        finally:
-            # Clean up chunk file
-            if os.path.exists(chunk_path):
-                os.remove(chunk_path)
-
-    # Step 5: Combine and return result
-    result = " ".join(full_text)
-
-    if result:
-        print(f"\nTranscription complete. Total characters: {len(result)}")
-        timestamps = send_text(result)
-        print(f"Timestamps received: {timestamps}")
-        return timestamps
-    else:
-        print("Transcription failed or produced no output.")
+        print(f"Transcription failed: {e}")
         return []
-        exit()
+    finally:
+        if os.path.exists(audio_path):
+            os.remove(audio_path)
+
+    # Step 3: Get highlights
+    timestamps = send_text(result)
+    print(f"Timestamps received: {timestamps}")
+    return timestamps

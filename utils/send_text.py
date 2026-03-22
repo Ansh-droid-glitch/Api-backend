@@ -3,7 +3,6 @@ import json
 import re
 from dotenv import load_dotenv
 import os
-
 def query_text(script: str) -> list[str]:
     load_dotenv()
     print("Sending script to AI...")

@@ -4,3 +4,4 @@ __pychache__
 *.mp3
 *.pyc
 *.wav
+*.env
